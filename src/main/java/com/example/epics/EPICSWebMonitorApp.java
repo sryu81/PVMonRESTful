@@ -18,9 +18,7 @@ public class EPICSWebMonitorApp {
     }
 
     private static void loadEPICSProperties() {
-        try (InputStream input = EPICSWebMonitorApp.class.getClassLoader()
-                .getResourceAsStream("application.properties")) {
-            
+        try (InputStream input = EPICSWebMonitorApp.class.getClassLoader().getResourceAsStream("application.properties")) {    
             if (input == null) {
                 System.out.println("Unable to find application.properties, using defaults");
                 setDefaultEPICSProperties();
@@ -38,14 +36,10 @@ public class EPICSWebMonitorApp {
             }
             
             // Set EPICS properties
-            System.setProperty("EPICS_CA_ADDR_LIST", 
-                props.getProperty("epics.ca.addr-list", "127.0.0.1"));
-            System.setProperty("EPICS_CA_AUTO_ADDR_LIST", 
-                props.getProperty("epics.ca.auto-addr-list", "NO"));
-            System.setProperty("EPICS_CA_SERVER_PORT", 
-                props.getProperty("epics.ca.server-port", "5064"));
-            System.setProperty("EPICS_CA_REPEATER_PORT", 
-                props.getProperty("epics.ca.repeater-port", "5065"));
+            System.setProperty("EPICS_CA_ADDR_LIST", props.getProperty("epics.ca.addr-list", "127.0.0.1"));
+            System.setProperty("EPICS_CA_AUTO_ADDR_LIST", props.getProperty("epics.ca.auto-addr-list", "NO"));
+            System.setProperty("EPICS_CA_SERVER_PORT", props.getProperty("epics.ca.server-port", "5064"));
+            System.setProperty("EPICS_CA_REPEATER_PORT", props.getProperty("epics.ca.repeater-port", "5065"));
             
             System.out.println("EPICS properties loaded from application.properties");
             

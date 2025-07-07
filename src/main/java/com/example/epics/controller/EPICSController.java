@@ -260,7 +260,7 @@ public class EPICSController {
     @GetMapping("/pvs")
     public ResponseEntity<Set<String>> getSubscribedPVs() {
         logger.debug("=== REST API: Getting subscribed PVs, current count: {} ===", currentPVData.size());
-        logger.debug("Stored PVs: {}", currentPVData.keySet());
+        logger.debug("Stored PVs: {}\n", currentPVData.keySet());
         return ResponseEntity.ok(currentPVData.keySet());
     }
 

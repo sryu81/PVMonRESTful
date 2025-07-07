@@ -18,6 +18,7 @@ public class EPICSConfig {
         logger.info("  EPICS_CA_SERVER_PORT: {}", System.getProperty("EPICS_CA_SERVER_PORT"));
         logger.info("  EPICS_CA_REPEATER_PORT: {}", System.getProperty("EPICS_CA_REPEATER_PORT"));
         logger.info("  java.net.preferIPv4Stack: {}", System.getProperty("java.net.preferIPv4Stack"));
+        logger.info("  server.port: {}", System.getProperty("server.port"));
         
         // Validate that required properties are set
         if (System.getProperty("EPICS_CA_ADDR_LIST") == null) {

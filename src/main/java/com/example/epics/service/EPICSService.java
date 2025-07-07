@@ -350,25 +350,25 @@ public class EPICSService {
         Channel<T> channel = context.createChannel(pvName, type);
         channels.put(pvName, channel);
         
-        // Connect with shorter timeout (2 seconds instead of 5)
-        channel.connectAsync().get(2, TimeUnit.SECONDS);
+        // Connect with shorter timeout (1 seconds instead of 5)
+        channel.connectAsync().get(100, TimeUnit.MILLISECONDS);
         logger.info("Connected to PV: {} with type: {}", pvName, type.getSimpleName());
 
         // Get initial value with shorter timeout (1 second instead of 2)
-        T initialValue = channel.getAsync().get(1, TimeUnit.SECONDS);
+        T initialValue = channel.getAsync().get(100, TimeUnit.MILLISECONDS);
         updatePVDataFromTypedValue(pvName, initialValue, type);
         
-        logger.info("Got initial value for PV {}: {}", pvName, initialValue);
+        //logger.info("Got initial value for PV {}: {}", pvName, initialValue);
 
         // Set up monitor for value changes
         Consumer<T> valueConsumer = value -> {
-            logger.debug("Value update for PV {}: {}", pvName, value);
+            //logger.debug("Value update for PV {}: {}", pvName, value);
             updatePVDataFromTypedValue(pvName, value, type);
         };
         
         Monitor<T> monitor = channel.addValueMonitor(valueConsumer);
         monitors.put(pvName, monitor);
-        logger.info("Monitor set up for PV: {}", pvName);
+        //logger.info("Monitor set up for PV: {}", pvName);
     }
     /**
      * Store field value in the field data cache
@@ -850,7 +850,7 @@ public class EPICSService {
             logger.debug("Interfaces: {}", Arrays.toString(object.getClass().getInterfaces()));
             
             logger.debug("Available methods:");
-java.lang.reflect.Method[] methods = object.getClass().getMethods();
+            java.lang.reflect.Method[] methods = object.getClass().getMethods();
             for (java.lang.reflect.Method method : methods) {
                 if (method.getName().startsWith("get") && method.getParameterCount() == 0) {
                     logger.debug("  - {} returns {}", method.getName(), method.getReturnType().getSimpleName());
