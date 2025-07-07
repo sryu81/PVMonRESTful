@@ -8,7 +8,6 @@ import org.epics.ca.Context;
 import org.epics.ca.Monitor;
 import org.epics.ca.data.*;
 
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -30,7 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @Service
-@Lazy
 public class EPICSService {
     private static final Logger logger = LoggerFactory.getLogger(EPICSService.class);
 
@@ -38,32 +36,14 @@ public class EPICSService {
     private final ConcurrentHashMap<String, Monitor<?>> monitors = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Channel<?>> channels = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PVData> pvDataCache = new ConcurrentHashMap<>();
-    
-    // Store field data for each PV
     private final ConcurrentHashMap<String, Map<String, Object>> pvFieldData = new ConcurrentHashMap<>();
 
-    // Common EPICS fields to monitor
-    private static final String[] ALARM_FIELDS = {
-        "HIHI", "HIGH", "LOW", "LOLO",           // Alarm limits
-        "HHSV", "HSV", "LSV", "LLSV"             // Alarm severities
-    };
-    
-    private static final String[] STATE_FIELDS = {
-        "ZNAM", "ONAM",                          // Binary state names
-        "ZRST", "ONST", "TWST", "THST", "FRST",  // Multi-state names (0-4)
-        "FVST", "SXST", "SVST", "EIST", "NIST",  // Multi-state names (5-9)
-        "TEST", "ELST", "TVST", "TTST", "FTST",  // Multi-state names (10-14)
-        "FFST"                                   // Multi-state name (15)
-    };
-    
-    private static final String[] METADATA_FIELDS = {
-        "EGU",   // Engineering units
-        "PREC",  // Precision
+    private static final String[] essentialFields = {
         "DESC",  // Description
-        "DRVH",  // Drive high limit
-        "DRVL",  // Drive low limit
-        "HOPR",  // High operating range
-        "LOPR"   // Low operating range
+        "EGU",   // Engineering units  
+        "PREC",  // Precision
+        "SEVR",  // Current alarm severity
+        "STAT"   // Current alarm status
     };
 
     public EPICSService() {
@@ -87,16 +67,16 @@ public class EPICSService {
         logger.info("EPICS system properties configured");
         try {
             logger.info("Initializing EPICS Context...");
-            this.context = new Context();
+            EPICSService.context = new Context();
             logger.info("EPICS Context initialized successfully");
         } catch (Exception e) {
             logger.error("Failed to initialize EPICS Context: {}", e.getMessage(), e);
             throw new RuntimeException("EPICS Context initialization failed", e);
         }
     }
-    
+
     public void subscribeToPV(String pvName) {
-        if (context == null) {
+        if (EPICSService.context == null) {
             logger.error("EPICS Context not initialized, cannot subscribe to PV: {}", pvName);
             PVData errorData = new PVData(pvName);
             errorData.setConnectionStatus(PVData.ConnectionStatus.ERROR);
@@ -138,60 +118,141 @@ public class EPICSService {
             sendPVDataUpdate(errorData);
         }
     }
-
+    
     /**
-     * Subscribe to additional EPICS fields asynchronously with shorter timeouts
+     * Simplified field subscription - only essential fields
      */
     private void subscribeToAdditionalFieldsAsync(String pvName) {
-        logger.debug("Starting async field subscription for PV: {}", pvName);
+        logger.debug("Starting simplified field subscription for PV: {}", pvName);
         
-        // Use shorter timeouts and parallel execution for fields
+        // Subscribe to current alarm status FIRST (most important)
+        subscribeToAlarmStatusFields(pvName);
+        
         List<CompletableFuture<Void>> fieldFutures = new ArrayList<>();
-        
-        // Subscribe to most important fields first (alarm limits)
-        String[] priorityFields = {"HIHI", "HIGH", "LOW", "LOLO", "EGU", "PREC", "DESC"};
-        for (String field : priorityFields) {
+        for (String field : essentialFields) {
             CompletableFuture<Void> future = CompletableFuture.runAsync(() -> 
-                subscribeToFieldWithTimeout(pvName, field, 1000) // 1 second timeout
+                subscribeToFieldWithTimeout(pvName, field, 1000)
             );
             fieldFutures.add(future);
         }
         
-        // Wait for priority fields to complete (max 2 seconds total)
+        // Wait for essential fields (max 2 seconds total)
         try {
             CompletableFuture.allOf(fieldFutures.toArray(new CompletableFuture[0]))
                 .get(2, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            logger.debug("Priority field subscription timed out for PV: {}", pvName);
         } catch (Exception e) {
-            logger.debug("Error in priority field subscription for PV: {}", pvName);
+            logger.debug("Essential field subscription completed with some timeouts for PV: {}", pvName);
         }
         
-        // Subscribe to secondary fields (state names, alarm severities) with even shorter timeout
-        fieldFutures.clear();
-        String[] secondaryFields = {"HHSV", "HSV", "LSV", "LLSV", "ZNAM", "ONAM", "DRVH", "DRVL"};
-        for (String field : secondaryFields) {
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> 
-                subscribeToFieldWithTimeout(pvName, field, 500) // 500ms timeout
-            );
-            fieldFutures.add(future);
-        }
-        
-        // Wait for secondary fields (max 1 second total)
-        try {
-            CompletableFuture.allOf(fieldFutures.toArray(new CompletableFuture[0]))
-                .get(1, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            logger.debug("Secondary field subscription completed with some timeouts for PV: {}", pvName);
-        }
-        
-        // Subscribe to multi-state fields only if we detected it's an enum PV
-        if (shouldSubscribeToMultiStateFields(pvName)) {
-            subscribeToMultiStateFields(pvName);
-        }
-        
-        logger.debug("Completed async field subscription for PV: {}", pvName);
+        logger.debug("Completed simplified field subscription for PV: {}", pvName);
     }
+
+    /**
+     * Subscribe to real-time alarm status fields
+     */
+    private void subscribeToAlarmStatusFields(String pvName) {
+        // Subscribe to current alarm status fields
+        String[] statusFields = {"SEVR", "STAT"};
+        
+        for (String field : statusFields) {
+            CompletableFuture.runAsync(() -> 
+                subscribeToFieldWithTimeout(pvName, field, 500)
+            );
+        }
+    }
+
+    /**
+     * Update current alarm status from SEVR and STAT fields
+     */
+    private void updateCurrentAlarmStatus(PVData pvData, Map<String, Object> fieldData) {
+        try {
+            // Get current alarm severity (SEVR field)
+            Object sevr = fieldData.get("SEVR");
+            if (sevr != null) {
+                try {
+                    String severityStr = sevr.toString();
+                    // EPICS SEVR values: 0=NO_ALARM, 1=MINOR, 2=MAJOR, 3=INVALID
+                    switch (severityStr) {
+                        case "0":
+                        case "NO_ALARM":
+                            pvData.setAlarmSeverity(PVData.AlarmSeverity.NO_ALARM);
+                            break;
+                        case "1":
+                        case "MINOR":
+                            pvData.setAlarmSeverity(PVData.AlarmSeverity.MINOR);
+                            break;
+                        case "2":
+                        case "MAJOR":
+                            pvData.setAlarmSeverity(PVData.AlarmSeverity.MAJOR);
+                            break;
+                        case "3":
+                        case "INVALID":
+                            pvData.setAlarmSeverity(PVData.AlarmSeverity.INVALID);
+                            break;
+                        default:
+                            pvData.setAlarmSeverity(PVData.AlarmSeverity.valueOf(severityStr));
+                    }
+                } catch (Exception e) {
+                    logger.debug("Could not parse alarm severity: {}", sevr);
+                }
+            }
+            
+            // Get current alarm status (STAT field)
+            Object stat = fieldData.get("STAT");
+            if (stat != null) {
+                try {
+                    String statusStr = stat.toString();
+                    // Try to map common EPICS STAT values
+                    switch (statusStr) {
+                        case "0":
+                        case "NO_ALARM":
+                            pvData.setAlarmStatus(PVData.AlarmStatus.NO_ALARM);
+                            break;
+                        case "1":
+                        case "READ":
+                            pvData.setAlarmStatus(PVData.AlarmStatus.READ_ALARM);
+                            break;
+                        case "2":
+                        case "WRITE":
+                            pvData.setAlarmStatus(PVData.AlarmStatus.WRITE_ALARM);
+                            break;
+                        case "3":
+                        case "HIHI":
+                            pvData.setAlarmStatus(PVData.AlarmStatus.HIHI_ALARM);
+                            break;
+                        case "4":
+                        case "HIGH":
+                            pvData.setAlarmStatus(PVData.AlarmStatus.HIGH_ALARM);
+                            break;
+                        case "5":
+                        case "LOLO":
+                            pvData.setAlarmStatus(PVData.AlarmStatus.LOLO_ALARM);
+                            break;
+                        case "6":
+                        case "LOW":
+                            pvData.setAlarmStatus(PVData.AlarmStatus.LOW_ALARM);
+                            break;
+                        default:
+                            try {
+                                pvData.setAlarmStatus(PVData.AlarmStatus.valueOf(statusStr));
+                            } catch (IllegalArgumentException e) {
+                                logger.debug("Unknown alarm status: {}", statusStr);
+                            }
+                    }
+                } catch (Exception e) {
+                    logger.debug("Could not parse alarm status: {}", stat);
+                }
+            }
+            
+            logger.debug("Updated current alarm status for PV {}: severity={}, status={}", 
+                        pvData.getPvName(), pvData.getAlarmSeverity(), pvData.getAlarmStatus());
+            
+        } catch (Exception e) {
+            logger.debug("Could not update current alarm status for PV {}: {}", pvData.getPvName(), e.getMessage());
+        }
+    }
+
+
 
     /**
      * Subscribe to a field with configurable timeout
@@ -249,43 +310,6 @@ public class EPICSService {
             } catch (Exception e2) {
                 logger.debug("Could not subscribe to field {} within {}ms: {}", fieldPvName, timeoutMs, e2.getMessage());
             }
-        }
-    }
-
-    /**
-     * Check if we should subscribe to multi-state fields based on current value
-     */
-    private boolean shouldSubscribeToMultiStateFields(String pvName) {
-        PVData pvData = pvDataCache.get(pvName);
-        if (pvData == null) return false;
-        
-        // Check if it's an integer/enum type
-        Object value = pvData.getValue();
-        if (value instanceof Integer || value instanceof Short || value instanceof Byte) {
-            return true;
-        }
-        
-        // Check if we already found ZNAM or ONAM
-        Map<String, Object> fieldData = pvFieldData.get(pvName);
-        if (fieldData != null && (fieldData.containsKey("ZNAM") || fieldData.containsKey("ONAM"))) {
-            return true;
-        }
-        
-        return false;
-    }
-
-
-    /**
-     * Subscribe to multi-state fields (ZRST, ONST, etc.) with very short timeout
-     */
-    private void subscribeToMultiStateFields(String pvName) {
-        String[] multiStateFields = {"ZRST", "ONST", "TWST", "THST", "FRST", 
-                                    "FVST", "SXST", "SVST", "EIST", "NIST", 
-                                    "TEST", "ELST", "TVST", "TTST", "FTST", "FFST"};
-        
-        for (String field : multiStateFields) {
-            // Use very short timeout for multi-state fields (many won't exist)
-            subscribeToFieldWithTimeout(pvName, field, 200); // 200ms timeout
         }
     }
 
@@ -356,9 +380,9 @@ public class EPICSService {
             logger.debug("Stored field {}.{} = {}", basePvName, fieldName, value);
         }
     }
-    
+
     /**
-     * Update PVData with information from field data
+     * Simplified update - only metadata and current alarm status
      */
     private void updatePVDataFromFields(String pvName) {
         PVData pvData = pvDataCache.get(pvName);
@@ -372,23 +396,11 @@ public class EPICSService {
         }
         
         try {
-            // Update alarm limits from fields
-            updateAlarmLimitsFromFields(pvData, fieldData);
+            // Update current alarm status from SEVR and STAT fields
+            updateCurrentAlarmStatus(pvData, fieldData);
             
-            // Update control limits from fields
-            updateControlLimitsFromFields(pvData, fieldData);
-            
-            // Update display limits from fields
-            updateDisplayLimitsFromFields(pvData, fieldData);
-            
-            // Update metadata from fields
-            updateMetadataFromFields(pvData, fieldData);
-            
-            // Update state information
-            updateStateInformationFromFields(pvData, fieldData);
-            
-            // Store the field data in PVData for frontend access
-            pvData.setFieldData(new HashMap<>(fieldData));
+            // Update basic metadata only (description, units, precision)
+            updateBasicMetadata(pvData, fieldData);
             
             pvData.setLastUpdate(LocalDateTime.now());
             sendPVDataUpdate(pvData);
@@ -397,189 +409,42 @@ public class EPICSService {
             logger.warn("Error updating PV data from fields for {}: {}", pvName, e.getMessage());
         }
     }
-    
+
     /**
-     * Update alarm limits from EPICS fields
+     * Update only basic metadata (no limits)
      */
-    private void updateAlarmLimitsFromFields(PVData pvData, Map<String, Object> fieldData) {
+    private void updateBasicMetadata(PVData pvData, Map<String, Object> fieldData) {
         try {
-            Double hihi = parseDoubleField(fieldData.get("HIHI"));
-            Double high = parseDoubleField(fieldData.get("HIGH"));
-            Double low = parseDoubleField(fieldData.get("LOW"));
-            Double lolo = parseDoubleField(fieldData.get("LOLO"));
-            
-            if (hihi != null || high != null || low != null || lolo != null) {
-                PVData.AlarmLimits alarmLimits = new PVData.AlarmLimits(lolo, hihi, low, high);
-                pvData.setAlarmLimits(alarmLimits);
-                logger.debug("Updated alarm limits from fields for PV {}: LOLO={}, LOW={}, HIGH={}, HIHI={}", 
-                            pvData.getPvName(), lolo, low, high, hihi);
+            // Description
+            Object desc = fieldData.get("DESC");
+            if (desc != null && !desc.toString().trim().isEmpty()) {
+                pvData.setDescription(desc.toString());
             }
             
-            // Store alarm severities
-            Map<String, Object> alarmSeverities = new HashMap<>();
-            alarmSeverities.put("HHSV", fieldData.get("HHSV"));
-            alarmSeverities.put("HSV", fieldData.get("HSV"));
-            alarmSeverities.put("LSV", fieldData.get("LSV"));
-            alarmSeverities.put("LLSV", fieldData.get("LLSV"));
-            pvData.setAlarmSeverities(alarmSeverities);
-            
-        } catch (Exception e) {
-            logger.debug("Could not update alarm limits from fields for PV {}: {}", pvData.getPvName(), e.getMessage());
-        }
-    }
-    
-    /**
-     * Update control limits from EPICS fields
-     */
-    private void updateControlLimitsFromFields(PVData pvData, Map<String, Object> fieldData) {
-        try {
-            Double drvh = parseDoubleField(fieldData.get("DRVH"));
-            Double drvl = parseDoubleField(fieldData.get("DRVL"));
-            
-            if (drvh != null || drvl != null) {
-                PVData.ControlLimits controlLimits = new PVData.ControlLimits(drvl, drvh);
-                pvData.setControlLimits(controlLimits);
-                logger.debug("Updated control limits from fields for PV {}: DRVL={}, DRVH={}", 
-                            pvData.getPvName(), drvl, drvh);
-            }
-            
-        } catch (Exception e) {
-            logger.debug("Could not update control limits from fields for PV {}: {}", pvData.getPvName(), e.getMessage());
-        }
-    }
-    
-    /**
-     * Update display limits from EPICS fields
-     */
-    private void updateDisplayLimitsFromFields(PVData pvData, Map<String, Object> fieldData) {
-        try {
-            Double hopr = parseDoubleField(fieldData.get("HOPR"));
-            Double lopr = parseDoubleField(fieldData.get("LOPR"));
-            Double high = parseDoubleField(fieldData.get("HIGH"));
-            Double low = parseDoubleField(fieldData.get("LOW"));
-            
-            if (hopr != null || lopr != null || high != null || low != null) {
-                PVData.DisplayLimits displayLimits = new PVData.DisplayLimits(lopr, hopr, low, high);
-                pvData.setDisplayLimits(displayLimits);
-                logger.debug("Updated display limits from fields for PV {}: LOPR={}, HOPR={}, LOW={}, HIGH={}", 
-                            pvData.getPvName(), lopr, hopr, low, high);
-            }
-            
-        } catch (Exception e) {
-            logger.debug("Could not update display limits from fields for PV {}: {}", pvData.getPvName(), e.getMessage());
-        }
-    }
-    
-    /**
-     * Update metadata from EPICS fields
-     */
-    private void updateMetadataFromFields(PVData pvData, Map<String, Object> fieldData) {
-        try {
             // Engineering units
             Object egu = fieldData.get("EGU");
-            if (egu != null) {
+            if (egu != null && !egu.toString().trim().isEmpty()) {
                 pvData.setUnits(egu.toString());
             }
             
             // Precision
             Object prec = fieldData.get("PREC");
             if (prec != null) {
-try {
+                try {
                     pvData.setPrecision(Integer.parseInt(prec.toString()));
                 } catch (NumberFormatException e) {
                     logger.debug("Could not parse precision value: {}", prec);
                 }
             }
             
-            // Description
-            Object desc = fieldData.get("DESC");
-            if (desc != null) {
-                pvData.setDescription(desc.toString());
-            }
-            
-            logger.debug("Updated metadata from fields for PV {}: EGU={}, PREC={}, DESC={}", 
-                        pvData.getPvName(), egu, prec, desc);
+            logger.debug("Updated basic metadata for PV {}: DESC={}, EGU={}, PREC={}", 
+                        pvData.getPvName(), desc, egu, prec);
             
         } catch (Exception e) {
-            logger.debug("Could not update metadata from fields for PV {}: {}", pvData.getPvName(), e.getMessage());
+            logger.debug("Could not update basic metadata for PV {}: {}", pvData.getPvName(), e.getMessage());
         }
     }
-    
-    /**
-     * Update state information from EPICS fields
-     */
-    private void updateStateInformationFromFields(PVData pvData, Map<String, Object> fieldData) {
-        try {
-            Map<String, String> stateNames = new HashMap<>();
-            
-            // Binary states
-            Object znam = fieldData.get("ZNAM");
-            Object onam = fieldData.get("ONAM");
-            if (znam != null) stateNames.put("0", znam.toString());
-            if (onam != null) stateNames.put("1", onam.toString());
-            
-            // Multi-states (0-15)
-            String[] multiStateFields = {"ZRST", "ONST", "TWST", "THST", "FRST", 
-                                        "FVST", "SXST", "SVST", "EIST", "NIST", 
-                                        "TEST", "ELST", "TVST", "TTST", "FTST", "FFST"};
-            
-            for (int i = 0; i < multiStateFields.length; i++) {
-                Object stateValue = fieldData.get(multiStateFields[i]);
-                if (stateValue != null && !stateValue.toString().trim().isEmpty()) {
-                    stateNames.put(String.valueOf(i), stateValue.toString());
-                }
-            }
-            
-            if (!stateNames.isEmpty()) {
-                pvData.setStateNames(stateNames);
-                logger.debug("Updated state names for PV {}: {}", pvData.getPvName(), stateNames);
-            }
-            
-        } catch (Exception e) {
-            logger.debug("Could not update state information from fields for PV {}: {}", pvData.getPvName(), e.getMessage());
-        }
-    }
-    
-    /**
-     * Parse a field value as Double, handling various formats
-     */
-    private Double parseDoubleField(Object fieldValue) {
-        if (fieldValue == null) {
-            return null;
-        }
-        
-        if (fieldValue instanceof Number) {
-            double value = ((Number) fieldValue).doubleValue();
-            // Check for invalid/unset values (EPICS often uses large numbers for unset limits)
-            if (Double.isNaN(value) || Double.isInfinite(value) || 
-                Math.abs(value) > 1e30) {
-                return null;
-            }
-            return value;
-        }
-        
-        if (fieldValue instanceof String) {
-            String str = ((String) fieldValue).trim();
-            if (str.isEmpty() || str.equalsIgnoreCase("nan") || str.equalsIgnoreCase("inf")) {
-                return null;
-            }
-            try {
-                double value = Double.parseDouble(str);
-                if (Double.isNaN(value) || Double.isInfinite(value) || 
-                    Math.abs(value) > 1e30) {
-                    return null;
-                }
-                return value;
-            } catch (NumberFormatException e) {
-                return null;
-            }
-        }
-        
-        return null;
-    }
-    
 
-    
     /**
      * Update PV data from typed channel value with proper inheritance handling
      */
@@ -618,10 +483,6 @@ try {
             // Graphic has graphic + alarm metadata  
             else if (channelValue instanceof Graphic) {
                 handleGraphicData(pvData, (Graphic<?, ?>) channelValue);
-            }
-            // Alarm has only alarm metadata
-            else if (channelValue instanceof Alarm) {
-                handleAlarmData(pvData, (Alarm<?>) channelValue);
             }
 
             // Store updated data
@@ -688,16 +549,6 @@ try {
             if (logger.isDebugEnabled()) {
                 debugGenericObject(control, "Control");
             }
-            
-            // 1. Handle Control-specific metadata (control limits)
-            handleControlLimits(pvData, control);
-            
-            // 2. Handle Graphic metadata (since Control extends Graphic)
-            handleGraphicMetadata(pvData, control);
-            
-            // 3. Handle Alarm metadata (since Graphic extends Alarm)
-            handleAlarmMetadata(pvData, control);
-            
             logger.debug("Extracted complete Control metadata for PV: {}", pvData.getPvName());
             
         } catch (Exception e) {
@@ -715,139 +566,10 @@ try {
                 debugGenericObject(graphic, "Graphic");
             }
             
-            // 1. Handle Graphic metadata
-            handleGraphicMetadata(pvData, graphic);
-            
-            // 2. Handle Alarm metadata (since Graphic extends Alarm)
-            handleAlarmMetadata(pvData, graphic);
-            
             logger.debug("Extracted Graphic metadata for PV: {}", pvData.getPvName());
             
         } catch (Exception e) {
             logger.warn("Error extracting graphic data for PV {}: {}", pvData.getPvName(), e.getMessage());
-        }
-    }
-
-    /**
-     * Handle Alarm data (only alarm metadata)
-     */
-    private void handleAlarmData(PVData pvData, Alarm<?> alarm) {
-        try {
-            handleAlarmMetadata(pvData, alarm);
-            logger.debug("Extracted Alarm metadata for PV: {}", pvData.getPvName());
-            
-        } catch (Exception e) {
-            logger.warn("Error extracting alarm data for PV {}: {}", pvData.getPvName(), e.getMessage());
-        }
-    }
-
-    /**
-     * Extract Control-specific limits using reflection (works with generics)
-     */
-    private void handleControlLimits(PVData pvData, Control<?, ?> control) {
-        try {
-            Double lowerLimit = reflectiveGetLimitValue(control, "getLowerControlLimit");
-            Double upperLimit = reflectiveGetLimitValue(control, "getUpperControlLimit");
-            
-            if (lowerLimit != null || upperLimit != null) {
-                PVData.ControlLimits controlLimits = new PVData.ControlLimits(lowerLimit, upperLimit);
-                pvData.setControlLimits(controlLimits);
-                logger.debug("Set control limits for PV {}: [{}, {}]", 
-                            pvData.getPvName(), lowerLimit, upperLimit);
-            }
-            
-        } catch (Exception e) {
-            logger.debug("Could not extract control limits for PV {}: {}", pvData.getPvName(), e.getMessage());
-        }
-    }
-
-    /**
-     * Extract Graphic metadata using reflection (works with generics)
-     */
-    private void handleGraphicMetadata(PVData pvData, Graphic<?, ?> graphic) {
-        try {
-            // Basic graphic info using reflection
-            String units = reflectiveGetStringValue(graphic, "getUnits");
-            Integer precision = reflectiveGetIntegerValue(graphic, "getPrecision");
-            
-            // Only set if not already set by field data (field data takes precedence)
-            if (pvData.getUnits() == null && units != null) {
-                pvData.setUnits(units);
-            }
-            if (pvData.getPrecision() == null && precision != null) {
-                pvData.setPrecision(precision);
-            }
-            
-            // Get all limits using reflection (field data will override these)
-            Double lowerDisplay = reflectiveGetLimitValue(graphic, "getLowerDisplayLimit");
-            Double upperDisplay = reflectiveGetLimitValue(graphic, "getUpperDisplayLimit");
-            Double lowerWarning = reflectiveGetLimitValue(graphic, "getLowerWarningLimit");
-            Double upperWarning = reflectiveGetLimitValue(graphic, "getUpperWarningLimit");
-            Double lowerAlarm = reflectiveGetLimitValue(graphic, "getLowerAlarmLimit");
-            Double upperAlarm = reflectiveGetLimitValue(graphic, "getUpperAlarmLimit");
-            
-            // Set display limits if not already set by field data
-            if (pvData.getDisplayLimits() == null && 
-                (lowerDisplay != null || upperDisplay != null || 
-                 lowerWarning != null || upperWarning != null)) {
-                
-                PVData.DisplayLimits displayLimits = new PVData.DisplayLimits(
-                    lowerDisplay, upperDisplay, lowerWarning, upperWarning
-                );
-                pvData.setDisplayLimits(displayLimits);
-            }
-            
-            // Set alarm limits if not already set by field data
-            if (pvData.getAlarmLimits() == null &&
-                (lowerAlarm != null || upperAlarm != null || 
-                 lowerWarning != null || upperWarning != null)) {
-                
-                PVData.AlarmLimits alarmLimits = new PVData.AlarmLimits(
-                    lowerAlarm, upperAlarm, lowerWarning, upperWarning
-                );
-                pvData.setAlarmLimits(alarmLimits);
-            }
-            
-            logger.debug("Set graphic metadata for PV {}: units={}, precision={}", 
-                        pvData.getPvName(), units, precision);
-            
-        } catch (Exception e) {
-            logger.debug("Could not extract graphic metadata for PV {}: {}", pvData.getPvName(), e.getMessage());
-        }
-    }
-
-    /**
-     * Extract Alarm metadata using reflection (works with generics)
-     */
-    private void handleAlarmMetadata(PVData pvData, Alarm<?> alarm) {
-        try {
-            // Get alarm status and severity using reflection
-            Object alarmStatus = reflectiveInvokeMethod(alarm, "getAlarmStatus");
-            Object alarmSeverity = reflectiveInvokeMethod(alarm, "getAlarmSeverity");
-            
-            if (alarmStatus != null) {
-                try {
-                    pvData.setAlarmStatus(PVData.AlarmStatus.valueOf(alarmStatus.toString()));
-                } catch (IllegalArgumentException e) {
-                    logger.debug("Unknown alarm status: {}", alarmStatus);
-                    pvData.setAlarmStatus(PVData.AlarmStatus.NO_ALARM);
-                }
-            }
-            
-            if (alarmSeverity != null) {
-                try {
-                    pvData.setAlarmSeverity(PVData.AlarmSeverity.valueOf(alarmSeverity.toString()));
-                } catch (IllegalArgumentException e) {
-logger.debug("Unknown alarm severity: {}", alarmSeverity);
-                    pvData.setAlarmSeverity(PVData.AlarmSeverity.NO_ALARM);
-                }
-            }
-            
-            logger.debug("Set alarm metadata for PV {}: status={}, severity={}", 
-                        pvData.getPvName(), alarmStatus, alarmSeverity);
-            
-        } catch (Exception e) {
-            logger.debug("Could not extract alarm metadata for PV {}: {}", pvData.getPvName(), e.getMessage());
         }
     }
 
@@ -1117,151 +839,6 @@ logger.debug("Unknown alarm severity: {}", alarmSeverity);
         return actualValue.getClass().getSimpleName();
     }
 
-    // [Include all the reflection helper methods from previous implementation...]
-    
-    /**
-     * Reflectively get a limit value and convert to Double
-     */
-    private Double reflectiveGetLimitValue(Object object, String methodName) {
-        try {
-            Object result = reflectiveInvokeMethod(object, methodName);
-            return safeConvertToDouble(result);
-        } catch (Exception e) {
-            logger.debug("Could not get limit value using method {}: {}", methodName, e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Reflectively get a String value
-     */
-    private String reflectiveGetStringValue(Object object, String methodName) {
-        try {
-            Object result = reflectiveInvokeMethod(object, methodName);
-            return result != null ? result.toString() : null;
-        } catch (Exception e) {
-            logger.debug("Could not get string value using method {}: {}", methodName, e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Reflectively get an Integer value
-     */
-    private Integer reflectiveGetIntegerValue(Object object, String methodName) {
-        try {
-            Object result = reflectiveInvokeMethod(object, methodName);
-            if (result instanceof Number) {
-                return ((Number) result).intValue();
-            }
-            if (result instanceof String) {
-                return Integer.parseInt((String) result);
-            }
-            return null;
-        } catch (Exception e) {
-            logger.debug("Could not get integer value using method {}: {}", methodName, e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Generic method to invoke any method using reflection
-     */
-    private Object reflectiveInvokeMethod(Object object, String methodName) {
-        if (object == null || methodName == null) {
-            return null;
-        }
-        
-        try {
-            // Try to find the method
-            java.lang.reflect.Method method = object.getClass().getMethod(methodName);
-            
-            // Make sure it's accessible
-            method.setAccessible(true);
-            
-            // Invoke the method
-            Object result = method.invoke(object);
-            
-            logger.debug("Successfully invoked {} on {}: {}", 
-                        methodName, object.getClass().getSimpleName(), result);
-            
-            return result;
-            
-        } catch (NoSuchMethodException e) {
-            logger.debug("Method {} not found on class {}", methodName, object.getClass().getSimpleName());
-            return null;
-        } catch (Exception e) {
-            logger.debug("Error invoking method {} on class {}: {}", 
-                        methodName, object.getClass().getSimpleName(), e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Enhanced safe conversion that handles more types
-     */
-    private Double safeConvertToDouble(Object value) {
-        if (value == null) {
-            return null;
-        }
-        
-        // Handle Number types (most common)
-        if (value instanceof Number) {
-            Number num = (Number) value;
-            // Check for special values
-            double doubleValue = num.doubleValue();
-            if (Double.isNaN(doubleValue) || Double.isInfinite(doubleValue)) {
-                logger.debug("Limit value is NaN or Infinite: {}", doubleValue);
-                return null;
-            }
-            return doubleValue;
-        }
-        
-        // Handle String types
-        if (value instanceof String) {
-            String str = ((String) value).trim();
-            if (str.isEmpty() || str.equalsIgnoreCase("null") || str.equalsIgnoreCase("n/a")) {
-                return null;
-            }
-            try {
-                double doubleValue = Double.parseDouble(str);
-                if (Double.isNaN(doubleValue) || Double.isInfinite(doubleValue)) {
-                    return null;
-                }
-                return doubleValue;
-            } catch (NumberFormatException e) {
-                logger.debug("Could not parse string '{}' to double", str);
-                return null;
-            }
-        }
-        
-        // Handle Boolean types
-        if (value instanceof Boolean) {
-            return ((Boolean) value) ? 1.0 : 0.0;
-        }
-        
-        // Handle Character types
-        if (value instanceof Character) {
-            return (double) ((Character) value);
-        }
-        
-        // Try toString() and parse as last resort
-        try {
-            String str = value.toString().trim();
-            if (!str.isEmpty() && !str.equalsIgnoreCase("null")) {
-                double doubleValue = Double.parseDouble(str);
-                if (!Double.isNaN(doubleValue) && !Double.isInfinite(doubleValue)) {
-                    return doubleValue;
-                }
-            }
-        } catch (NumberFormatException e) {
-            logger.debug("Could not convert object '{}' (type: {}) to double via toString()", 
-                        value, value.getClass().getSimpleName());
-        }
-        
-        return null;
-    }
-
     /**
      * Debug method to see what methods are available on generic objects
      */
@@ -1376,9 +953,7 @@ java.lang.reflect.Method[] methods = object.getClass().getMethods();
             }
         }
         
-        // Remove field monitors and channels
-        String[] allFields = concatenateArrays(ALARM_FIELDS, STATE_FIELDS, METADATA_FIELDS);
-        for (String field : allFields) {
+        for (String field : essentialFields) {
             String fieldPvName = pvName + "." + field;
             
             Monitor<?> fieldMonitor = monitors.remove(fieldPvName);
@@ -1402,6 +977,10 @@ java.lang.reflect.Method[] methods = object.getClass().getMethods();
             }
         }
         
+        // Clean up any remaining field channels that might exist
+        // (in case there are leftover channels from before the simplification)
+        cleanupRemainingFieldChannels(pvName);
+        
         // Remove from caches and mark as disconnected
         PVData pvData = pvDataCache.get(pvName);
         if (pvData != null) {
@@ -1415,27 +994,58 @@ java.lang.reflect.Method[] methods = object.getClass().getMethods();
         
         logger.info("Completed unsubscription for PV: {}", pvName);
     }
-    
+
     /**
-     * Utility method to concatenate arrays
+     * Clean up any remaining field channels that might exist from old subscriptions
      */
-    private String[] concatenateArrays(String[]... arrays) {
-        int totalLength = 0;
-        for (String[] array : arrays) {
-            totalLength += array.length;
+    private void cleanupRemainingFieldChannels(String basePvName) {
+        // Get all monitor keys that start with this PV name
+        List<String> keysToRemove = new ArrayList<>();
+        
+        for (String key : monitors.keySet()) {
+            if (key.startsWith(basePvName + ".")) {
+                keysToRemove.add(key);
+            }
         }
         
-        String[] result = new String[totalLength];
-        int currentIndex = 0;
-        
-        for (String[] array : arrays) {
-            System.arraycopy(array, 0, result, currentIndex, array.length);
-            currentIndex += array.length;
+        // Remove any remaining field monitors
+        for (String key : keysToRemove) {
+            Monitor<?> monitor = monitors.remove(key);
+            if (monitor != null) {
+                try {
+                    monitor.close();
+                    logger.debug("Cleaned up remaining monitor: {}", key);
+                } catch (Exception e) {
+                    logger.debug("Error cleaning up monitor {}: {}", key, e.getMessage());
+                }
+            }
         }
         
-        return result;
+        // Do the same for channels
+        keysToRemove.clear();
+        for (String key : channels.keySet()) {
+            if (key.startsWith(basePvName + ".")) {
+                keysToRemove.add(key);
+            }
+        }
+        
+        for (String key : keysToRemove) {
+            Channel<?> channel = channels.remove(key);
+            if (channel != null) {
+                try {
+                    channel.close();
+                    logger.debug("Cleaned up remaining channel: {}", key);
+                } catch (Exception e) {
+                    logger.debug("Error cleaning up channel {}: {}", key, e.getMessage());
+                }
+            }
+        }
+        
+        if (!keysToRemove.isEmpty()) {
+            logger.debug("Cleaned up {} remaining field channels for PV: {}", keysToRemove.size(), basePvName);
+        }
     }
-    
+
     @PreDestroy
     public void cleanup() {
         logger.info("Cleaning up EPICS Service...");

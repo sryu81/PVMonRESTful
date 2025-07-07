@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @RestController
 @RequestMapping("/api/epics")
-@CrossOrigin(origins = "*") // Configure as needed
+@CrossOrigin(origins = "*")
 public class EPICSController {
     
     private static final Logger logger = LoggerFactory.getLogger(EPICSController.class);
@@ -107,65 +107,117 @@ public class EPICSController {
             response.put("pvName", pvData.getPvName());
             response.put("value", pvData.getValue());
             response.put("dataType", pvData.getDataType());
+            
+            // Merged connection status - use string enum, easier for frontend
+            response.put("connectionStatus", pvData.getConnectionStatus().toString());
+            response.put("isConnected", pvData.getConnectionStatus() == PVData.ConnectionStatus.CONNECTED);
+            
+            // Alarm information - fix the missing values
+            String alarmSeverity = null;
+            String alarmStatus = null;
+            boolean hasAlarm = false;
+            
+            if (pvData.getAlarmSeverity() != null) {
+                alarmSeverity = pvData.getAlarmSeverity().toString();
+                hasAlarm = pvData.getAlarmSeverity() != PVData.AlarmSeverity.NO_ALARM;
+            }
+            
+            if (pvData.getAlarmStatus() != null) {
+                alarmStatus = pvData.getAlarmStatus().toString();
+            }
+            
+            // Try to get alarm info from field data if not available in PVData
+            if (alarmSeverity == null || alarmStatus == null) {
+                Map<String, Object> fieldData = epicsService.getAllFieldData(pvName);
+                if (fieldData != null) {
+                    if (alarmSeverity == null) {
+                        // Check current alarm severity from EPICS
+                        Object sevr = fieldData.get("SEVR");
+                        if (sevr != null) {
+                            alarmSeverity = sevr.toString();
+                            hasAlarm = !alarmSeverity.equals("NO_ALARM") && !alarmSeverity.equals("0");
+                        }
+                    }
+                    if (alarmStatus == null) {
+                        Object stat = fieldData.get("STAT");
+                        if (stat != null) {
+                            alarmStatus = stat.toString();
+                        }
+                    }
+                }
+            }
+            
+            response.put("alarmSeverity", alarmSeverity);
+            response.put("alarmStatus", alarmStatus);
+            response.put("hasAlarm", hasAlarm);
+            
+            // Metadata - fix missing values by checking field data
+            String description = pvData.getDescription();
+            String units = pvData.getUnits();
+            Integer precision = pvData.getPrecision();
+            
+            // Get from field data if not available in PVData
+            Map<String, Object> fieldData = epicsService.getAllFieldData(pvName);
+            if (fieldData != null) {
+                if (description == null || description.trim().isEmpty()) {
+                    Object desc = fieldData.get("DESC");
+                    if (desc != null && !desc.toString().trim().isEmpty()) {
+                        description = desc.toString();
+                    }
+                }
+                
+                if (units == null || units.trim().isEmpty()) {
+                    Object egu = fieldData.get("EGU");
+                    if (egu != null && !egu.toString().trim().isEmpty()) {
+                        units = egu.toString();
+                    }
+                }
+                
+                if (precision == null) {
+                    Object prec = fieldData.get("PREC");
+                    if (prec != null) {
+                        try {
+                            precision = Integer.parseInt(prec.toString());
+                        } catch (NumberFormatException e) {
+                            // Keep null
+                        }
+                    }
+                }
+            }
+            
+            response.put("description", description);
+            response.put("units", units);
+            response.put("precision", precision);
+            
+            // Formatted value for display (using precision if available)
+            String formattedValue;
+            if (pvData.getValue() instanceof Number && precision != null && precision > 0) {
+                Number numValue = (Number) pvData.getValue();
+                String format = "%." + precision + "f";
+                formattedValue = String.format(format, numValue.doubleValue());
+            } else {
+                formattedValue = pvData.getValue() != null ? pvData.getValue().toString() : null;
+            }
+            response.put("formattedValue", formattedValue);
+            
+            // Display value with units
+            String displayValue = formattedValue;
+            if (units != null && !units.trim().isEmpty() && displayValue != null) {
+                displayValue = displayValue + " " + units;
+            }
+            response.put("displayValue", displayValue);
+            
+            // Timestamps
             response.put("timestamp", pvData.getTimestamp());
             response.put("lastUpdate", pvData.getLastUpdate());
             
-            // Connection and status
-            response.put("connectionStatus", pvData.getConnectionStatus());
-            response.put("alarmStatus", pvData.getAlarmStatus());
-            response.put("alarmSeverity", pvData.getAlarmSeverity());
-            
-            // Metadata
-            response.put("units", pvData.getUnits());
-            response.put("precision", pvData.getPrecision());
-            response.put("description", pvData.getDescription());
-            
-            // Limits (these will be null if not available)
-            response.put("displayLimits", pvData.getDisplayLimits());
-            response.put("alarmLimits", pvData.getAlarmLimits());
-            response.put("controlLimits", pvData.getControlLimits());
-            
-            // Additional computed fields for frontend convenience
-            response.put("isConnected", pvData.getConnectionStatus() == PVData.ConnectionStatus.CONNECTED);
-            response.put("hasAlarm", pvData.getAlarmSeverity() != null && 
-                                    pvData.getAlarmSeverity() != PVData.AlarmSeverity.NO_ALARM);
+            // Writability - simplified check
             response.put("isWritable", pvData.getControlLimits() != null);
-            
-            // Formatted value for display (if numeric and has precision)
-            if (pvData.getValue() instanceof Number && pvData.getPrecision() != null) {
-                Number numValue = (Number) pvData.getValue();
-                String format = "%." + pvData.getPrecision() + "f";
-                response.put("formattedValue", String.format(format, numValue.doubleValue()));
-            } else {
-                response.put("formattedValue", pvData.getValue() != null ? pvData.getValue().toString() : null);
-            }
-            
-            // Value with units for display
-            String valueWithUnits = response.get("formattedValue") != null ? 
-                response.get("formattedValue").toString() : "";
-            if (pvData.getUnits() != null && !pvData.getUnits().trim().isEmpty()) {
-                valueWithUnits += " " + pvData.getUnits();
-            }
-            response.put("displayValue", valueWithUnits);
             
             return ResponseEntity.ok(response);
         }
         
         return ResponseEntity.notFound().build();
-    }
-
-    @GetMapping("/pv/{pvName}/history")
-    public ResponseEntity<List<PVData>> getPVDataHistory(
-            @PathVariable String pvName,
-            @RequestParam(defaultValue = "10") int limit) {
-        logger.debug("=== REST API: Get PV data history for: {} (limit: {}) ===", pvName, limit);
-        
-        List<PVData> history = pvDataHistory.get(pvName);
-        if (history != null && !history.isEmpty()) {
-            int fromIndex = Math.max(0, history.size() - limit);
-            return ResponseEntity.ok(new ArrayList<>(history.subList(fromIndex, history.size())));
-        }
-        return ResponseEntity.ok(new ArrayList<>());
     }
 
     @PostMapping("/pv/{pvName}/set")
@@ -210,53 +262,6 @@ public class EPICSController {
         logger.debug("=== REST API: Getting subscribed PVs, current count: {} ===", currentPVData.size());
         logger.debug("Stored PVs: {}", currentPVData.keySet());
         return ResponseEntity.ok(currentPVData.keySet());
-    }
-
-    @GetMapping("/pvs/status")
-    public ResponseEntity<Map<String, Object>> getAllPVStatus() {
-        logger.debug("=== REST API: Getting all PV status ===");
-        
-        Map<String, Object> statusMap = new HashMap<>();
-        
-        for (Map.Entry<String, PVData> entry : currentPVData.entrySet()) {
-            String pvName = entry.getKey();
-            PVData pvData = entry.getValue();
-            
-            Map<String, Object> pvStatus = new HashMap<>();
-            pvStatus.put("connectionStatus", pvData.getConnectionStatus());
-            pvStatus.put("alarmStatus", pvData.getAlarmStatus());
-            pvStatus.put("alarmSeverity", pvData.getAlarmSeverity());
-            pvStatus.put("value", pvData.getValue());
-            pvStatus.put("lastUpdate", pvData.getLastUpdate());
-            
-            statusMap.put(pvName, pvStatus);
-        }
-        
-        return ResponseEntity.ok(statusMap);
-    }
-
-    @GetMapping("/pvs/summary")
-    public ResponseEntity<Map<String, Object>> getPVsSummary() {
-        logger.debug("=== REST API: Getting PVs summary ===");
-        
-        Map<String, Object> summary = new HashMap<>();
-        
-        long totalPVs = currentPVData.size();
-        long connectedPVs = currentPVData.values().stream()
-            .mapToLong(pv -> pv.getConnectionStatus() == PVData.ConnectionStatus.CONNECTED ? 1 : 0)
-            .sum();
-        long alarmedPVs = currentPVData.values().stream()
-            .mapToLong(pv -> pv.getAlarmSeverity() != null && 
-                           pv.getAlarmSeverity() != PVData.AlarmSeverity.NO_ALARM ? 1 : 0)
-            .sum();
-        
-        summary.put("totalPVs", totalPVs);
-        summary.put("connectedPVs", connectedPVs);
-        summary.put("disconnectedPVs", totalPVs - connectedPVs);
-        summary.put("alarmedPVs", alarmedPVs);
-        summary.put("timestamp", LocalDateTime.now());
-        
-        return ResponseEntity.ok(summary);
     }
 
     @PostMapping("/pvs/subscribe-bulk")
@@ -307,49 +312,44 @@ public class EPICSController {
         }
     }
 
-    // ========== LEGACY ENDPOINTS (Backward Compatibility) ==========
-
-    @GetMapping("/pv/{pvName}/latest")
-    public ResponseEntity<EPICSService.PVUpdate> getLatestValue(@PathVariable String pvName) {
-        logger.debug("=== REST API: Get latest value (legacy) for: {} ===", pvName);
+    @GetMapping("/health")
+    public ResponseEntity<Map<String, Object>> getHealth() {
+        logger.debug("=== REST API: Health check ===");
         
-        List<EPICSService.PVUpdate> updates = pvUpdates.get(pvName);
-        if (updates != null && !updates.isEmpty()) {
-            return ResponseEntity.ok(updates.get(updates.size() - 1));
+        Map<String, Object> health = new HashMap<>();
+        
+        try {
+            // Check if EPICS service is working
+            boolean epicsHealthy = epicsService != null;
+            
+            // Count connected PVs
+            long connectedPVs = currentPVData.values().stream()
+                .mapToLong(pv -> pv.getConnectionStatus() == PVData.ConnectionStatus.CONNECTED ? 1 : 0)
+                .sum();
+            
+            // Count alarmed PVs
+            long alarmedPVs = currentPVData.values().stream()
+                .mapToLong(pv -> pv.getAlarmSeverity() != null && 
+                            pv.getAlarmSeverity() != PVData.AlarmSeverity.NO_ALARM ? 1 : 0)
+                .sum();
+            
+            health.put("status", epicsHealthy ? "UP" : "DOWN");
+            health.put("epicsService", epicsHealthy ? "AVAILABLE" : "UNAVAILABLE");
+            health.put("totalPVs", currentPVData.size());
+            health.put("connectedPVs", connectedPVs);
+            health.put("alarmedPVs", alarmedPVs);
+            health.put("timestamp", LocalDateTime.now());
+            
+            return ResponseEntity.ok(health);
+            
+        } catch (Exception e) {
+            health.put("status", "DOWN");
+            health.put("error", e.getMessage());
+            health.put("timestamp", LocalDateTime.now());
+            
+            return ResponseEntity.status(500).body(health);
         }
-        
-        // Convert from new PVData to legacy PVUpdate
-        PVData pvData = currentPVData.get(pvName);
-        if (pvData != null) {
-            EPICSService.PVUpdate legacyUpdate = new EPICSService.PVUpdate(
-                pvData.getPvName(),
-                pvData.getValue(),
-                pvData.getConnectionStatus().toString(),
-                pvData.getTimestamp() != null ? 
-                    pvData.getTimestamp().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli() : 
-                    System.currentTimeMillis()
-            );
-            return ResponseEntity.ok(legacyUpdate);
-        }
-        
-        return ResponseEntity.notFound().build();
     }
-
-    @GetMapping("/pv/{pvName}/history-legacy")
-    public ResponseEntity<List<EPICSService.PVUpdate>> getLegacyHistory(
-            @PathVariable String pvName,
-            @RequestParam(defaultValue = "10") int limit) {
-        logger.debug("=== REST API: Get legacy history for: {} ===", pvName);
-        
-        List<EPICSService.PVUpdate> updates = pvUpdates.get(pvName);
-        if (updates != null) {
-            int fromIndex = Math.max(0, updates.size() - limit);
-            return ResponseEntity.ok(updates.subList(fromIndex, updates.size()));
-        }
-        return ResponseEntity.ok(new ArrayList<>());
-    }
-
-    // ========== DATA STORAGE METHODS (Called by EPICSService) ==========
 
     /**
      * Store PVData updates (new enhanced method)
@@ -408,299 +408,4 @@ public class EPICSController {
         }
     }
 
-    // ========== SEARCH AND FILTER ENDPOINTS ==========
-
-    @GetMapping("/pvs/search")
-    public ResponseEntity<List<String>> searchPVs(@RequestParam String pattern) {
-        logger.debug("=== REST API: Search PVs with pattern: {} ===", pattern);
-        
-        List<String> matchingPVs = currentPVData.keySet().stream()
-            .filter(pvName -> pvName.toLowerCase().contains(pattern.toLowerCase()))
-            .sorted()
-            .toList();
-        
-        return ResponseEntity.ok(matchingPVs);
-    }
-
-    @GetMapping("/pvs/filter")
-    public ResponseEntity<List<Map<String, Object>>> filterPVs(
-            @RequestParam(required = false) String connectionStatus,
-            @RequestParam(required = false) String alarmSeverity,
-            @RequestParam(required = false) String dataType) {
-        logger.debug("=== REST API: Filter PVs - status: {}, severity: {}, type: {} ===", 
-                    connectionStatus, alarmSeverity, dataType);
-        
-        List<Map<String, Object>> filteredPVs = new ArrayList<>();
-        
-        for (Map.Entry<String, PVData> entry : currentPVData.entrySet()) {
-            PVData pvData = entry.getValue();
-            boolean matches = true;
-            
-            if (connectionStatus != null && !connectionStatus.isEmpty()) {
-                matches = matches && pvData.getConnectionStatus().toString().equalsIgnoreCase(connectionStatus);
-            }
-            
-            if (alarmSeverity != null && !alarmSeverity.isEmpty()) {
-                matches = matches && pvData.getAlarmSeverity() != null && 
-                         pvData.getAlarmSeverity().toString().equalsIgnoreCase(alarmSeverity);
-            }
-            
-            if (dataType != null && !dataType.isEmpty()) {
-                matches = matches && pvData.getDataType() != null && 
-                         pvData.getDataType().toLowerCase().contains(dataType.toLowerCase());
-            }
-            
-            if (matches) {
-                Map<String, Object> pvInfo = new HashMap<>();
-                pvInfo.put("pvName", pvData.getPvName());
-                pvInfo.put("value", pvData.getValue());
-                pvInfo.put("dataType", pvData.getDataType());
-                pvInfo.put("connectionStatus", pvData.getConnectionStatus());
-                pvInfo.put("alarmStatus", pvData.getAlarmStatus());
-                pvInfo.put("alarmSeverity", pvData.getAlarmSeverity());
-                pvInfo.put("units", pvData.getUnits());
-                pvInfo.put("lastUpdate", pvData.getLastUpdate());
-                
-                filteredPVs.add(pvInfo);
-            }
-        }
-        
-        return ResponseEntity.ok(filteredPVs);
-    }
-
-    // ========== ALARM MONITORING ENDPOINTS ==========
-
-    @GetMapping("/alarms")
-    public ResponseEntity<List<Map<String, Object>>> getActiveAlarms() {
-        logger.debug("=== REST API: Get active alarms ===");
-        
-        List<Map<String, Object>> alarms = new ArrayList<>();
-        
-        for (Map.Entry<String, PVData> entry : currentPVData.entrySet()) {
-            PVData pvData = entry.getValue();
-            
-            if (pvData.getAlarmSeverity() != null && 
-                pvData.getAlarmSeverity() != PVData.AlarmSeverity.NO_ALARM) {
-                
-                Map<String, Object> alarm = new HashMap<>();
-                alarm.put("pvName", pvData.getPvName());
-                alarm.put("value", pvData.getValue());
-                alarm.put("alarmStatus", pvData.getAlarmStatus());
-                alarm.put("alarmSeverity", pvData.getAlarmSeverity());
-                alarm.put("units", pvData.getUnits());
-                alarm.put("alarmLimits", pvData.getAlarmLimits());
-                alarm.put("lastUpdate", pvData.getLastUpdate());
-                
-                alarms.add(alarm);
-            }
-        }
-        
-        // Sort by severity (MAJOR, MINOR, INVALID)
-        alarms.sort((a, b) -> {
-            String severityA = a.get("alarmSeverity").toString();
-            String severityB = b.get("alarmSeverity").toString();
-            return getSeverityPriority(severityB) - getSeverityPriority(severityA); // Descending
-        });
-        
-        return ResponseEntity.ok(alarms);
-    }
-
-    private int getSeverityPriority(String severity) {
-        switch (severity) {
-            case "MAJOR": return 3;
-            case "MINOR": return 2;
-            case "INVALID": return 1;
-            default: return 0;
-        }
-    }
-
-    @GetMapping("/alarms/count")
-    public ResponseEntity<Map<String, Object>> getAlarmCounts() {
-        logger.debug("=== REST API: Get alarm counts ===");
-        
-        Map<String, Integer> severityCounts = new HashMap<>();
-        severityCounts.put("MAJOR", 0);
-        severityCounts.put("MINOR", 0);
-        severityCounts.put("INVALID", 0);
-        
-        for (PVData pvData : currentPVData.values()) {
-            if (pvData.getAlarmSeverity() != null && 
-                pvData.getAlarmSeverity() != PVData.AlarmSeverity.NO_ALARM) {
-                
-                String severity = pvData.getAlarmSeverity().toString();
-                severityCounts.put(severity, severityCounts.getOrDefault(severity, 0) + 1);
-            }
-        }
-        
-        Map<String, Object> response = new HashMap<>();
-        response.put("severityCounts", severityCounts);
-        response.put("totalAlarms", severityCounts.values().stream().mapToInt(Integer::intValue).sum());
-        response.put("timestamp", LocalDateTime.now());
-        
-        return ResponseEntity.ok(response);
-    }
-
-    // ========== STATISTICS ENDPOINTS ==========
-
-    @GetMapping("/stats")
-    public ResponseEntity<Map<String, Object>> getStatistics() {
-        logger.debug("=== REST API: Get statistics ===");
-        
-        Map<String, Object> stats = new HashMap<>();
-        
-        // Connection statistics
-        Map<String, Integer> connectionStats = new HashMap<>();
-        for (PVData.ConnectionStatus status : PVData.ConnectionStatus.values()) {
-            connectionStats.put(status.toString(), 0);
-        }
-        
-        // Data type statistics
-        Map<String, Integer> dataTypeStats = new HashMap<>();
-        
-        // Alarm statistics
-        Map<String, Integer> alarmStats = new HashMap<>();
-        for (PVData.AlarmSeverity severity : PVData.AlarmSeverity.values()) {
-            alarmStats.put(severity.toString(), 0);
-        }
-        
-        // Process all PVs
-        for (PVData pvData : currentPVData.values()) {
-            // Connection stats
-            String connStatus = pvData.getConnectionStatus().toString();
-            connectionStats.put(connStatus, connectionStats.getOrDefault(connStatus, 0) + 1);
-            
-            // Data type stats
-            String dataType = pvData.getDataType() != null ? pvData.getDataType() : "Unknown";
-            dataTypeStats.put(dataType, dataTypeStats.getOrDefault(dataType, 0) + 1);
-            
-            // Alarm stats
-            String alarmSeverity = pvData.getAlarmSeverity() != null ? 
-                pvData.getAlarmSeverity().toString() : "NO_ALARM";
-            alarmStats.put(alarmSeverity, alarmStats.getOrDefault(alarmSeverity, 0) + 1);
-        }
-        
-        stats.put("totalPVs", currentPVData.size());
-        stats.put("connectionStatistics", connectionStats);
-        stats.put("dataTypeStatistics", dataTypeStats);
-        stats.put("alarmStatistics", alarmStats);
-        stats.put("timestamp", LocalDateTime.now());
-        
-        return ResponseEntity.ok(stats);
-    }
-
-    // ========== HEALTH CHECK ENDPOINTS ==========
-
-    @GetMapping("/health")
-    public ResponseEntity<Map<String, Object>> getHealth() {
-        logger.debug("=== REST API: Health check ===");
-        
-        Map<String, Object> health = new HashMap<>();
-        
-        try {
-            // Check if EPICS service is working
-            boolean epicsHealthy = epicsService != null;
-            
-            // Count connected PVs
-            long connectedPVs = currentPVData.values().stream()
-                .mapToLong(pv -> pv.getConnectionStatus() == PVData.ConnectionStatus.CONNECTED ? 1 : 0)
-                .sum();
-            
-            // Count alarmed PVs
-            long alarmedPVs = currentPVData.values().stream()
-                .mapToLong(pv -> pv.getAlarmSeverity() != null && 
-                               pv.getAlarmSeverity() != PVData.AlarmSeverity.NO_ALARM ? 1 : 0)
-                .sum();
-            
-            health.put("status", epicsHealthy ? "UP" : "DOWN");
-            health.put("epicsService", epicsHealthy ? "AVAILABLE" : "UNAVAILABLE");
-            health.put("totalPVs", currentPVData.size());
-            health.put("connectedPVs", connectedPVs);
-            health.put("alarmedPVs", alarmedPVs);
-            health.put("timestamp", LocalDateTime.now());
-            
-            return ResponseEntity.ok(health);
-            
-        } catch (Exception e) {
-            health.put("status", "DOWN");
-            health.put("error", e.getMessage());
-            health.put("timestamp", LocalDateTime.now());
-            
-            return ResponseEntity.status(500).body(health);
-        }
-    }
-
-    @GetMapping("/version")
-    public ResponseEntity<Map<String, Object>> getVersion() {
-        Map<String, Object> version = new HashMap<>();
-        version.put("application", "EPICS REST API");
-        version.put("version", "2.0.0");
-        version.put("apiVersion", "v1");
-        version.put("features", Arrays.asList(
-            "PV Subscription/Unsubscription",
-            "Real-time Value Monitoring", 
-            "Metadata Extraction",
-            "Alarm Monitoring",
-            "Bulk Operations",
-            "Search and Filter",
-            "Statistics",
-            "Legacy Compatibility"
-        ));
-        version.put("timestamp", LocalDateTime.now());
-        
-        return ResponseEntity.ok(version);
-    }
-
-    // ========== UTILITY ENDPOINTS ==========
-
-    @PostMapping("/clear-cache")
-    public ResponseEntity<Map<String, Object>> clearCache() {
-        logger.info("=== REST API: Clear cache called ===");
-        
-        int pvDataCount = currentPVData.size();
-        int historyCount = pvDataHistory.values().stream().mapToInt(List::size).sum();
-        int legacyCount = pvUpdates.values().stream().mapToInt(List::size).sum();
-        
-        // Clear all caches but keep subscriptions active
-        currentPVData.clear();
-        pvDataHistory.clear();
-        pvUpdates.clear();
-        
-        Map<String, Object> response = new HashMap<>();
-        response.put("status", "success");
-        response.put("message", "Cache cleared successfully");
-        response.put("clearedPVData", pvDataCount);
-        response.put("clearedHistoryEntries", historyCount);
-        response.put("clearedLegacyEntries", legacyCount);
-        response.put("timestamp", System.currentTimeMillis());
-        
-        return ResponseEntity.ok(response);
-    }
-
-    @GetMapping("/memory-usage")
-    public ResponseEntity<Map<String, Object>> getMemoryUsage() {
-        logger.debug("=== REST API: Get memory usage ===");
-        
-        Runtime runtime = Runtime.getRuntime();
-        
-        Map<String, Object> memory = new HashMap<>();
-        memory.put("totalMemory", runtime.totalMemory());
-        memory.put("freeMemory", runtime.freeMemory());
-        memory.put("usedMemory", runtime.totalMemory() - runtime.freeMemory());
-        memory.put("maxMemory", runtime.maxMemory());
-        
-        // Calculate cache sizes
-        int totalPVData = currentPVData.size();
-        int totalHistoryEntries = pvDataHistory.values().stream().mapToInt(List::size).sum();
-        int totalLegacyEntries = pvUpdates.values().stream().mapToInt(List::size).sum();
-        
-        memory.put("cacheSizes", Map.of(
-            "currentPVData", totalPVData,
-            "historyEntries", totalHistoryEntries,
-            "legacyEntries", totalLegacyEntries
-        ));
-        
-        memory.put("timestamp", LocalDateTime.now());
-        
-        return ResponseEntity.ok(memory);
-    }
 }
