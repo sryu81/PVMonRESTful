@@ -11,6 +11,7 @@ Currently supports CA protocol but will add PVA soon...
 - Access to an EPICS IOC with process variables
 
 ## Building
+Before building, you need to check src/main/resource/application.properties and change the proeperties that fits to you environment.
 
 ```bash
 mvn clean install
