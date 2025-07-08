@@ -351,14 +351,14 @@ public class EPICSService {
         channels.put(pvName, channel);
         
         // Connect with shorter timeout (1 seconds instead of 5)
-        channel.connectAsync().get(100, TimeUnit.MILLISECONDS);
+        channel.connectAsync().get(500, TimeUnit.MILLISECONDS);
         logger.info("Connected to PV: {} with type: {}", pvName, type.getSimpleName());
 
         // Get initial value with shorter timeout (1 second instead of 2)
         T initialValue = channel.getAsync().get(100, TimeUnit.MILLISECONDS);
         updatePVDataFromTypedValue(pvName, initialValue, type);
         
-        //logger.info("Got initial value for PV {}: {}", pvName, initialValue);
+        logger.info("Got initial value for PV {}: {}", pvName, initialValue);
 
         // Set up monitor for value changes
         Consumer<T> valueConsumer = value -> {
