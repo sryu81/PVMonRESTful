@@ -14,4 +14,4 @@
 #export EPICS_CA_AUTO_ADDR_LIST="YES"
 
 # Run the application
-java -jar target/pv-monitor-restful-1.1.0.jar
+java -Dserver.port=9080 -jar target/pv-monitor-restful-1.1.0.jar
