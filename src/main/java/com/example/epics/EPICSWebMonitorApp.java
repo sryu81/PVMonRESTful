@@ -36,8 +36,8 @@ public class EPICSWebMonitorApp {
             }
             
             // Set EPICS properties
-            System.setProperty("EPICS_CA_ADDR_LIST", props.getProperty("epics.ca.addr-list", "127.0.0.1"));
-            System.setProperty("EPICS_CA_AUTO_ADDR_LIST", props.getProperty("epics.ca.auto-addr-list", "NO"));
+            System.setProperty("EPICS_CA_ADDR_LIST", props.getProperty("epics.ca.addr-list", ""));
+            System.setProperty("EPICS_CA_AUTO_ADDR_LIST", props.getProperty("epics.ca.auto-addr-list", "YES"));
             System.setProperty("EPICS_CA_SERVER_PORT", props.getProperty("epics.ca.server-port", "5064"));
             System.setProperty("EPICS_CA_REPEATER_PORT", props.getProperty("epics.ca.repeater-port", "5065"));
             
@@ -52,8 +52,8 @@ public class EPICSWebMonitorApp {
     private static void setDefaultEPICSProperties() {
         System.setProperty("java.net.preferIPv4Stack", "true");
         System.setProperty("java.net.preferIPv6Addresses", "false");
-        System.setProperty("EPICS_CA_ADDR_LIST", "127.0.0.1");
-        System.setProperty("EPICS_CA_AUTO_ADDR_LIST", "NO");
+        System.setProperty("EPICS_CA_ADDR_LIST", "");
+        System.setProperty("EPICS_CA_AUTO_ADDR_LIST", "YES");
         System.setProperty("EPICS_CA_SERVER_PORT", "5064");
         System.setProperty("EPICS_CA_REPEATER_PORT", "5065");
         System.out.println("Using default EPICS properties");

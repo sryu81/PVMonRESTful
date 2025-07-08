@@ -399,6 +399,9 @@ public class EPICSService {
         // Fallback to Object type
         if(testPVGet(pvName, Object.class,2))
             subscribeToTypedChannelFast(pvName, Object.class);
+        else
+            logger.debug("Failed to subscribe as Object type for PV {}", pvName);
+
     }
 
     /**
