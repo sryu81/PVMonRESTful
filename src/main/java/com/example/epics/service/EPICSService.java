@@ -373,32 +373,32 @@ public class EPICSService {
     private void subscribeToMainPV(String pvName) throws Exception {
         // Try different channel types with shorter timeouts
         try {
-            testPVGet(pvName, Double.class,2);
-            subscribeToTypedChannelFast(pvName, Double.class);
+            if(testPVGet(pvName, Double.class,2))
+                subscribeToTypedChannelFast(pvName, Double.class);
             return;
         } catch (Exception e) {
             logger.debug("Failed to subscribe as Double for PV {}: {}", pvName, e.getMessage());
         }
         
         try {
-            testPVGet(pvName, String.class,2);
-            subscribeToTypedChannelFast(pvName, String.class);
+            if(testPVGet(pvName, String.class,2))
+                subscribeToTypedChannelFast(pvName, String.class);
             return;
         } catch (Exception e) {
             logger.debug("Failed to subscribe as String for PV {}: {}", pvName, e.getMessage());
         }
         
         try {
-            testPVGet(pvName, Integer.class,2);
-            subscribeToTypedChannelFast(pvName, Integer.class);
+            if(testPVGet(pvName, Integer.class,2))
+                subscribeToTypedChannelFast(pvName, Integer.class);
             return;
         } catch (Exception e) {
             logger.debug("Failed to subscribe as Integer for PV {}: {}", pvName, e.getMessage());
         }
         
         // Fallback to Object type
-        testPVGet(pvName, Object.class,2);
-        subscribeToTypedChannelFast(pvName, Object.class);
+        if(testPVGet(pvName, Object.class,2))
+            subscribeToTypedChannelFast(pvName, Object.class);
     }
 
     /**
