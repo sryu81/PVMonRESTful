@@ -19,6 +19,12 @@ mvn clean install
 
 ## Executing
 
+before run the service, check your port first. The default port number is 8080 but you can set the port number at ./scripts/run.sh
+```
+java -Dserver.port=9080 -jar target/pv-monitor-restful-1.1.0.jar
+```
+
+If you ready then,
 ```bash
 ./scripts/run.sh
 ```
