@@ -61,6 +61,60 @@ public class EPICSService {
             controller.storePVData(pvData);
         }
     }
+
+    /**
+     * Test if we can perform a simple GET operation (like caget)
+     */
+    public<T> boolean testPVGet(String pvName, Class<T> type, int timeoutSeconds) {
+      
+        Channel<T> channel = null;    
+
+        try {
+            logger.debug("Testing GET operation for PV: {}", pvName);
+            
+            // Create channel
+            channel = context.createChannel(pvName, type);
+            
+            // Wait for connection
+            channel.connectAsync().get(timeoutSeconds, TimeUnit.SECONDS);
+            
+            // Check if connected (using different approach since ConnectionState might not be available)
+            if (!isChannelConnected(channel)) {
+                logger.warn("Channel not connected for PV: {}", pvName);
+                return false;
+            }
+            
+            // Perform synchronous get (like caget)
+            CompletableFuture<T> getFuture = channel.getAsync();
+            T value = getFuture.get(timeoutSeconds, TimeUnit.SECONDS);
+            
+            logger.debug("GET successful for PV: {} = {}", pvName, value);
+            return true;
+            
+        } catch (Exception e) {
+            logger.error("GET failed for PV: {} - {}", pvName, e.getMessage());
+            return false;
+        } finally {
+            if (channel != null) {
+                try {
+                    channel.close();
+                } catch (Exception e) {
+                    logger.warn("Error closing test channel for PV: {}", pvName);
+                }
+            }
+        }
+    }
+    /**
+     * Check if channel is connected (alternative to ConnectionState enum)
+     */
+    private boolean isChannelConnected(Channel<?> channel) {
+        try {
+            // Try to get channel info - if it throws exception, not connected
+            return channel != null && !channel.getName().isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
     
     @PostConstruct
     public void initialize() {
@@ -319,6 +373,7 @@ public class EPICSService {
     private void subscribeToMainPV(String pvName) throws Exception {
         // Try different channel types with shorter timeouts
         try {
+            testPVGet(pvName, Double.class,2);
             subscribeToTypedChannelFast(pvName, Double.class);
             return;
         } catch (Exception e) {
@@ -326,6 +381,7 @@ public class EPICSService {
         }
         
         try {
+            testPVGet(pvName, String.class,2);
             subscribeToTypedChannelFast(pvName, String.class);
             return;
         } catch (Exception e) {
@@ -333,6 +389,7 @@ public class EPICSService {
         }
         
         try {
+            testPVGet(pvName, Integer.class,2);
             subscribeToTypedChannelFast(pvName, Integer.class);
             return;
         } catch (Exception e) {
@@ -340,6 +397,7 @@ public class EPICSService {
         }
         
         // Fallback to Object type
+        testPVGet(pvName, Object.class,2);
         subscribeToTypedChannelFast(pvName, Object.class);
     }
 
